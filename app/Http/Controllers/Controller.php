@@ -133,4 +133,66 @@ class Controller extends BaseController {
 		return $user->getResponseData(true);
 	}
 	
+	/**
+	 * @param $details
+	 * @param $id
+	 * @return array
+	 */
+	protected function repositoryData ($details, $id)
+	:array {
+		
+		return ['user_id' => $id,
+		        'forks'   => $details['forks_count'],
+		        'name'    => $details['name'],
+		        'stars'   => $details['stargazers_count'],];
+	}
+	
+	/**
+	 * @param \Illuminate\Http\Request $request
+	 * @param $id
+	 * @return mixed
+	 */
+	public function searchRepositoryQuery (Request $request, $id) {
+		$query = 'user:' . User::find($id)->user_name;
+		if ($query != NULL) {
+			$query = '&q=' . $request->query('q');
+		}
+		$response = GitHubService::search()->repositories($query, 'forks');
+		
+		Log::channel('search')->info('Repositories against user Query ==>'.'/users/{username}/repositories/?q=query&s=forks');
+		
+		$repositories = Collect($response['items']);
+		$ids = Collect();
+		$repositories->each(function ($repo) use ($ids, $id) {
+			$currentRepo = Repository::where('user_id', $id)->where(
+					'name',
+					$repo['name']
+				)->first();
+			if (!isset($currentRepo)) {
+				$repo = Repository::create(self::repositoryData($repo, $id));
+			}
+			else {
+				$repo = $currentRepo;
+			}
+			$ids->push($repo->id);
+		});
+		
+		return Repository::whereIn('id', $ids->toArray())->get()->toArray();
+	}
+	
+	public function getPopularUsers(Request $request){
+		$date = Carbon::now();
+		if($request->query('date') !== null ){
+			$date = Carbon::parse($request->query('date'));
+		}
+		$ids = UserPopularity::whereDate('created_at', $date)
+		        ->groupBy('user_id')
+		              ->having(
+						  'created_at',
+						  '<',
+						  Carbon::now()
+		              )->orderBy('popularity','DESC')->take(3)->pluck('user_id');
+		
+		return User::whereIn('id',$ids)->simplePaginate();
+	}
 }
