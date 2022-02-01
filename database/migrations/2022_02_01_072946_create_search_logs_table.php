@@ -4,7 +4,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
-class CreatePopularityUsersTable extends Migration
+class CreateSearchLogsTable extends Migration
 {
     /**
      * Run the migrations.
@@ -13,11 +13,12 @@ class CreatePopularityUsersTable extends Migration
      */
     public function up()
     {
-        Schema::create('user_popularities', function (Blueprint $table) {
+        Schema::create('search_logs', function (Blueprint $table) {
             $table->id();
-	        $table->unsignedBigInteger('user_id')->nullable();
-	        $table->integer('popularity')->default(0);
-			$table->dateTime('created_at')->nullable();
+			$table->text('query');
+			$table->text('model');
+			$table->longText('response');
+            $table->timestamps();
         });
     }
 
@@ -28,6 +29,6 @@ class CreatePopularityUsersTable extends Migration
      */
     public function down()
     {
-        Schema::dropIfExists('user_popularities');
+        Schema::dropIfExists('search_logs');
     }
 }

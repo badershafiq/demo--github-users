@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Repository;
+use App\Models\SearchLog;
 use App\Models\User;
 use App\Models\UserPopularity;
 use Carbon\Carbon;
@@ -24,8 +25,6 @@ class Controller extends BaseController {
 				'repos:>0',
 				'repositories'
 			);
-			Log::channel('search')->info('User Index Query ==>'."/search/repositories/?q=repos:>0&s=repositories");
-			
 			$users = Collect($response['items']);
 			$users->each(function ($user) {
 				$currentUser = User::where('user_name', $user['login'])->first(
@@ -75,8 +74,6 @@ class Controller extends BaseController {
 			$query = 'repos:>0';
 		}
 		$response = GitHubService::search()->users($query, 'repositories');
-		Log::channel('search')->info('User search Query ==>'."/search/repositories/?q=query&s=repositories");
-		
 		$users = Collect($response['items']);
 		$ids = Collect();
 		$users->each(function ($user) use ($ids) {
@@ -91,14 +88,21 @@ class Controller extends BaseController {
 			}
 			$ids->push($user->id);
 		});
-		
-		return User::whereIn('id', $ids->toArray())->orderBy(
+		$response_data = User::whereIn('id', $ids->toArray())->orderBy(
 			'popularity',
 			'DESC'
 		)->orderBy(
 			'public_repos',
 			'DESC'
-		)->simplePaginate(3)->withQueryString()->toArray();
+		)->simplePaginate(3)->withQueryString();
+		SearchLog::create(
+			[
+				'query' => $query,
+				'model' => 'Users',
+				'response' => $response_data->pluck('id')
+			]
+		);
+		return $response_data->toArray();
 	}
 	
 	/**
@@ -106,31 +110,37 @@ class Controller extends BaseController {
 	 * @return mixed
 	 */
 	public function findById ($id) {
-		$user = User::findOrFail($id);
-		$user->popularity = (int)$user->popularity + 1;
-		$user->save();
-		UserPopularity::create(
-			[
-				'popularity'=> $user->popularity,
-				'user_id'=>$user->id
-			]
-		);
-		$repositories = Collect(
-			GitHubService::users()->repositories($user->user_name)
-		);
-		Log::channel('search')->info('Repositories against user Query ==>'.'/users/{username}/repositories');
-		
-		$repositories->each(function ($repo) use ($id) {
-			$currentRepo = Repository::where('user_id', $id)->where(
+		try {
+			$user = User::findOrFail($id);
+			$user->popularity = (int)$user->popularity + 1;
+			$user->save();
+			UserPopularity::create(
+				[
+					'popularity'=> $user->popularity,
+					'user_id'=>$user->id,
+					'created_at'=>Carbon::now(),
+				]
+			);
+			$repositories = Collect(
+				GitHubService::users()->repositories($user->user_name)
+			);
+			Log::channel('search')->info('Repositories against user Query ==>'.'/users/{username}/repositories');
+			
+			$repositories->each(function ($repo) use ($id) {
+				$currentRepo = Repository::where('user_id', $id)->where(
 					'name',
 					$repo['name']
 				)->first();
-			if (!isset($currentRepo)) {
-				Repository::create(self::repositoryData($repo, $id));
-			}
-		});
+				if (!isset($currentRepo)) {
+					Repository::create(self::repositoryData($repo, $id));
+				}
+			});
+			
+			return $user->getResponseData(true);
+		}catch (\Exception $exception){
+			return response()->json(['status'=>404,'result'=>'User not found in our DB']);
+		}
 		
-		return $user->getResponseData(true);
 	}
 	
 	/**
@@ -153,46 +163,61 @@ class Controller extends BaseController {
 	 * @return mixed
 	 */
 	public function searchRepositoryQuery (Request $request, $id) {
-		$query = 'user:' . User::find($id)->user_name;
-		if ($query != NULL) {
-			$query = '&q=' . $request->query('q');
+		try{
+			$user = User::findOrFail($id);
+			$query = 'user:' . $user->user_name;
+			if ($request->query('q') != NULL) {
+				$query = $query.' q=' . $request->query('q');
+			}
+			$response = GitHubService::search()->repositories($query, 'forks');
+			$repositories = Collect($response['items']);
+			$ids = Collect();
+			$repositories->each(function ($repo) use ($ids, $id) {
+				$currentRepo = Repository::where('user_id', $id)->where(
+						'name',
+						$repo['name']
+					)->first();
+				if (!isset($currentRepo)) {
+					$repo = Repository::create(self::repositoryData($repo, $id));
+				}
+				else {
+					$repo = $currentRepo;
+				}
+				$ids->push($repo->id);
+			});
+			$response_data = Repository::whereIn('id', $ids->toArray())
+			                           ->get();
+			SearchLog::create(
+				[
+					'query' => $query,
+					'model' => 'Repository',
+					'response' => $response_data->pluck('id')
+				]
+			);
+			return $response_data->toArray();
+		}catch (\Exception $exception){
+			return response()->json(
+				[
+					'status'=>404,
+					'result'=>'there was an error finding the repositories please try different keywords'
+				]
+			);
 		}
-		$response = GitHubService::search()->repositories($query, 'forks');
 		
-		Log::channel('search')->info('Repositories against user Query ==>'.'/users/{username}/repositories/?q=query&s=forks');
-		
-		$repositories = Collect($response['items']);
-		$ids = Collect();
-		$repositories->each(function ($repo) use ($ids, $id) {
-			$currentRepo = Repository::where('user_id', $id)->where(
-					'name',
-					$repo['name']
-				)->first();
-			if (!isset($currentRepo)) {
-				$repo = Repository::create(self::repositoryData($repo, $id));
-			}
-			else {
-				$repo = $currentRepo;
-			}
-			$ids->push($repo->id);
-		});
-		
-		return Repository::whereIn('id', $ids->toArray())->get()->toArray();
 	}
 	
 	public function getPopularUsers(Request $request){
 		$date = Carbon::now();
 		if($request->query('date') !== null ){
 			$date = Carbon::parse($request->query('date'));
+		}else{
+			$date = $date->addDay();
 		}
-		$ids = UserPopularity::whereDate('created_at', $date)
-		        ->groupBy('user_id')
-		              ->having(
-						  'created_at',
-						  '<',
-						  Carbon::now()
-		              )->orderBy('popularity','DESC')->take(3)->pluck('user_id');
-		
+		$ids = UserPopularity::whereDate('created_at','<', $date)
+		                     ->groupBy('user_id')
+							 ->orderBy('popularity','DESC')
+							 ->take(3)
+		                     ->pluck('user_id');
 		return User::whereIn('id',$ids)->simplePaginate();
 	}
 }

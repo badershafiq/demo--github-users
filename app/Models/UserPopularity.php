@@ -8,13 +8,14 @@ use Illuminate\Database\Eloquent\Model;
 class UserPopularity extends Model
 {
     use HasFactory;
+	public $timestamps = false;
 	/**
 	 * The attributes that are mass assignable.
 	 *
 	 * @var array<int, string>
 	 */
 	protected $fillable = [
-		'popularity','user_id'
+		'popularity','user_id','created_at'
 	];
 	
 }
